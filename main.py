@@ -1,57 +1,60 @@
 import requests
 import psycopg2
 import os
+from datetime import datetime
 
-# Konfiguracja połączenia z Railway (wstaw swoje dane)
-DB_HOST = os.environ.get("DB_HOST")
-DB_NAME = os.environ.get("DB_NAME")
-DB_USER = os.environ.get("DB_USER")
-DB_PASS = os.environ.get("DB_PASS")
-DB_PORT = os.environ.get("DB_PORT")
+# Dane do bazy z Railway – najlepiej trzymać je jako zmienne środowiskowe
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASS")
+DB_PORT = os.getenv("DB_PORT", 5432)
 
-# Pobranie danych z IMGW
-response = requests.get("https://danepubliczne.imgw.pl/api/data/synop")
-data = response.json()
+# URL z danymi IMGW
+url = "https://danepubliczne.imgw.pl/api/data/synop"
 
-# Połączenie z bazą
-conn = psycopg2.connect(
-    host=DB_HOST,
-    dbname=DB_NAME,
-    user=DB_USER,
-    password=DB_PASS,
-    port=DB_PORT
-)
+def fetch_data():
+    response = requests.get(url)
+    response.raise_for_status()
+    return response.json()
 
-cur = conn.cursor()
-
-# Utworzenie tabeli (jeśli nie istnieje)
-cur.execute("""
-    CREATE TABLE IF NOT EXISTS pogoda (
-        id SERIAL PRIMARY KEY,
-        stacja TEXT,
-        data_pomiaru DATE,
-        godzina_pomiaru INT,
-        temperatura NUMERIC,
-        suma_opadu NUMERIC,
-        cisnienie NUMERIC
+def save_to_db(data):
+    conn = psycopg2.connect(
+        host=DB_HOST,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASS,
+        port=DB_PORT
     )
-""")
+    cur = conn.cursor()
 
-# Wstawianie danych
-for rekord in data:
+    # Tworzymy prostą tabelę jeśli nie istnieje
     cur.execute("""
-        INSERT INTO pogoda (stacja, data_pomiaru, godzina_pomiaru, temperatura, suma_opadu, cisnienie)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (
-        rekord.get('stacja'),
-        rekord.get('data_pomiaru'),
-        int(rekord.get('godzina_pomiaru')),
-        float(rekord.get('temperatura')),
-        float(rekord.get('suma_opadu') or 0),
-        float(rekord.get('cisnienie') or 0)
-    ))
+        CREATE TABLE IF NOT EXISTS imgw_data (
+            id SERIAL PRIMARY KEY,
+            stacja TEXT,
+            data_pomiaru TIMESTAMP,
+            temperatura NUMERIC,
+            cisnienie NUMERIC
+        )
+    """)
 
-conn.commit()
-cur.close()
-conn.close()
-print("Dane zostały zapisane do bazy.")
+    for item in data:
+        cur.execute("""
+            INSERT INTO imgw_data (stacja, data_pomiaru, temperatura, cisnienie)
+            VALUES (%s, %s, %s, %s)
+        """, (
+            item.get("stacja"),
+            datetime.strptime(item.get("data_pomiaru"), "%Y-%m-%d %H:%M:%S"),
+            float(item.get("temperatura")) if item.get("temperatura") else None,
+            float(item.get("cisnienie")) if item.get("cisnienie") else None,
+        ))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    print("✅ Dane zapisane do bazy danych!")
+
+if __name__ == "__main__":
+    data = fetch_data()
+    save_to_db(data)
